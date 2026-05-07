@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import html
 import re
 import zipfile
 from io import BytesIO
@@ -56,9 +55,14 @@ RESIZE_MODE_OPTIONS = {
     "stretch": "늘려서 채우기",
 }
 MAX_OUTPUT_SIZE = 8192
-PREVIEW_MAX_WIDTH = 520
-PREVIEW_FRAME_HEIGHT = 240
+PREVIEW_MAX_WIDTH = 420
+PREVIEW_FRAME_HEIGHT = 180
 PREVIEW_RENDER_SCALE = 2
+CONTROL_WIDTH_XS = 64
+CONTROL_WIDTH_SM = 150
+CONTROL_WIDTH_MD = 260
+CONTROL_WIDTH_LG = 360
+CONTROL_WIDTH_XL = 560
 ERASER_MAX_DIMENSION = 1024
 MIN_ROTATION_DEGREES = -180
 MAX_ROTATION_DEGREES = 180
@@ -185,6 +189,14 @@ def clipboard_image_name(original_name: str, index: int) -> str:
     return f"{stem}.png"
 
 
+def format_file_size(byte_count: int) -> str:
+    if byte_count < 1024:
+        return f"{byte_count} B"
+    if byte_count < 1024 * 1024:
+        return f"{byte_count / 1024:.1f} KB"
+    return f"{byte_count / (1024 * 1024):.1f} MB"
+
+
 def ensure_clipboard_state(image_state_key: str, seen_state_key: str) -> None:
     if image_state_key not in st.session_state:
         st.session_state[image_state_key] = []
@@ -197,15 +209,15 @@ def absorb_clipboard_images(
     *,
     image_state_key: str,
     seen_state_key: str,
-) -> None:
+) -> int:
     ensure_clipboard_state(image_state_key, seen_state_key)
     if not isinstance(component_value, dict):
-        return
+        return 0
 
     batch_id = str(component_value.get("id") or "")
     seen_ids = st.session_state[seen_state_key]
     if batch_id and batch_id in seen_ids:
-        return
+        return 0
 
     image_payloads = component_value.get("images")
     if not isinstance(image_payloads, list):
@@ -255,52 +267,87 @@ def absorb_clipboard_images(
     for error in errors:
         st.warning(f"클립보드 이미지를 읽지 못했습니다: {error}")
 
+    return added_count
+
 
 def render_fixed_preview(image_bytes: bytes, *, alt: str) -> None:
-    safe_alt = html.escape(alt, quote=True)
-    st.markdown(
-        f"""
-        <div class="fixed-preview-frame">
-            <img src="{png_data_uri(image_bytes)}" alt="{safe_alt}">
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.image(image_bytes)
 
 
 def render_clipboard_upload(
     *,
     component_key: str,
-    clear_key: str,
     image_state_key: str = CLIPBOARD_IMAGE_STATE_KEY,
     seen_state_key: str = CLIPBOARD_SEEN_STATE_KEY,
 ) -> list[dict[str, Any]]:
     ensure_clipboard_state(image_state_key, seen_state_key)
     component_value = clipboard_image(
+        image_count=len(st.session_state[image_state_key]),
         default=None,
         key=component_key,
     )
-    absorb_clipboard_images(
+    added_count = absorb_clipboard_images(
         component_value,
         image_state_key=image_state_key,
         seen_state_key=seen_state_key,
     )
-
-    pasted_images = st.session_state[image_state_key]
-    if pasted_images:
-        st.caption(f"붙여넣은 이미지 {len(pasted_images)}개")
-        with st.expander("붙여넣은 이미지"):
-            for image in pasted_images:
-                st.write(image["name"])
-        if st.button(
-            "붙여넣은 이미지 지우기",
-            key=clear_key,
-            width="stretch",
-        ):
-            st.session_state[image_state_key] = []
-            st.rerun()
+    if added_count:
+        st.rerun()
 
     return list(st.session_state[image_state_key])
+
+
+def clear_clipboard_images(image_state_key: str) -> None:
+    st.session_state[image_state_key] = []
+
+
+def remove_clipboard_image(image_state_key: str, digest: str) -> None:
+    st.session_state[image_state_key] = [
+        image
+        for image in st.session_state.get(image_state_key, [])
+        if image.get("digest") != digest
+    ]
+
+
+def render_clipboard_image_manager(
+    pasted_images: list[dict[str, Any]],
+    *,
+    clear_key: str,
+    image_state_key: str = CLIPBOARD_IMAGE_STATE_KEY,
+) -> None:
+    if not pasted_images:
+        return
+
+    st.caption(f"클립보드 이미지 {len(pasted_images)}개")
+    for index, image in enumerate(pasted_images):
+        digest = str(image["digest"])
+        name = str(image["name"])
+        thumbnail = process_original_preview(image["bytes"])
+        size_label = format_file_size(len(image["bytes"]))
+        width, height = thumbnail["size"]
+        row_cols = st.columns([0.08, 0.72, 0.2], vertical_alignment="center")
+        with row_cols[0]:
+            st.image(thumbnail["preview_bytes"], width=34)
+        with row_cols[1]:
+            st.write(name)
+            st.caption(f"{width}x{height}px · {size_label}")
+        with row_cols[2]:
+            st.button(
+                "제거",
+                key=f"{clear_key}_remove_{digest}_{index}",
+                on_click=remove_clipboard_image,
+                args=(image_state_key, digest),
+                width=CONTROL_WIDTH_SM,
+            )
+
+    if len(pasted_images) > 1:
+        st.button(
+            "클립보드 이미지 모두 제거",
+            key=clear_key,
+            on_click=clear_clipboard_images,
+            args=(image_state_key,),
+            width=CONTROL_WIDTH_MD,
+        )
 
 
 def tileset_guide_size(tile_size: int, gap: int, margin: int) -> tuple[int, int]:
@@ -439,37 +486,6 @@ def slice_tileset_guide_image(
         "source_size": source.size,
         "expected_size": (expected_width, expected_height),
     }
-
-
-def render_preview_styles() -> None:
-    st.markdown(
-        f"""
-        <style>
-        .fixed-preview-frame {{
-            height: {PREVIEW_FRAME_HEIGHT}px;
-            width: 100%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            overflow: hidden;
-            border: 1px solid rgba(49, 51, 63, 0.16);
-            border-radius: 6px;
-            background: rgb(250, 250, 250);
-        }}
-
-        .fixed-preview-frame img {{
-            display: block;
-            width: auto;
-            height: auto;
-            max-width: 100%;
-            max-height: 100%;
-            object-fit: contain;
-        }}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
 
 @st.cache_resource(show_spinner=False)
 def get_rembg_session(model_name: str):
@@ -700,6 +716,11 @@ def build_combined_sprite_sheet(
         "scale": result.scale,
         "placements": placements,
     }
+
+
+@st.cache_data(show_spinner=False)
+def image_size_for_payload(image_bytes: bytes) -> tuple[int, int]:
+    return load_image(image_bytes).size
 
 
 @st.cache_data(show_spinner=False)
@@ -980,6 +1001,7 @@ def render_erase_editor(image_id: str, cropped_png_bytes: bytes) -> None:
             step=1,
             key=brush_key,
             disabled=not bool(st.session_state[enabled_key]),
+            width=CONTROL_WIDTH_MD,
         )
     with control_cols[2]:
         st.button(
@@ -988,7 +1010,7 @@ def render_erase_editor(image_id: str, cropped_png_bytes: bytes) -> None:
             on_click=reset_erase_mask,
             args=(image_id,),
             disabled=not bool(st.session_state[mask_key]),
-            use_container_width=True,
+            width=CONTROL_WIDTH_MD,
         )
 
     if not bool(st.session_state[enabled_key]):
@@ -1039,6 +1061,7 @@ def render_compact_controls(
                 format_func=lambda value: MODEL_OPTIONS[value],
                 key=model_key,
                 help="모델 선택하지 않음은 배경 제거를 건너뛰고 원본 alpha 기준으로 편집합니다.",
+                width=CONTROL_WIDTH_LG,
             )
         model_disabled = st.session_state[model_key] == MODEL_NONE
         with background_cols[1]:
@@ -1048,6 +1071,7 @@ def render_compact_controls(
                 max_value=254,
                 key=image_state_key(image_id, "alpha_threshold"),
                 help="값이 높을수록 거의 투명한 배경 잔여 픽셀을 무시하고 더 강하게 crop합니다.",
+                width=CONTROL_WIDTH_LG,
             )
         with background_cols[2]:
             st.checkbox(
@@ -1070,6 +1094,7 @@ def render_compact_controls(
             max_value=254,
             key=image_state_key(image_id, "alpha_threshold"),
             help="값이 높을수록 거의 투명한 배경 잔여 픽셀을 무시하고 더 강하게 crop합니다.",
+            width=CONTROL_WIDTH_LG,
         )
 
     locked = bool(st.session_state[lock_key])
@@ -1082,6 +1107,7 @@ def render_compact_controls(
                 max_value=MAX_OUTPUT_SIZE,
                 step=1,
                 key=width_key,
+                width=CONTROL_WIDTH_SM,
             )
         )
 
@@ -1093,7 +1119,7 @@ def render_compact_controls(
             help="가로/세로 비율 잠금",
             on_click=toggle_aspect_lock,
             args=(image_id,),
-            use_container_width=True,
+            width=CONTROL_WIDTH_XS,
         )
 
     with size_cols[2]:
@@ -1110,6 +1136,7 @@ def render_compact_controls(
                 step=1,
                 key=height_key,
                 disabled=True,
+                width=CONTROL_WIDTH_SM,
             )
         else:
             st.number_input(
@@ -1118,6 +1145,7 @@ def render_compact_controls(
                 max_value=MAX_OUTPUT_SIZE,
                 step=1,
                 key=height_key,
+                width=CONTROL_WIDTH_SM,
             )
 
     with size_cols[3]:
@@ -1130,7 +1158,7 @@ def render_compact_controls(
             format_func=lambda value: RESIZE_MODE_OPTIONS[value],
             key=resize_key,
             help="비율 유지 옵션은 투명 캔버스 안에 맞춘 뒤 중앙/상단/하단/좌측/우측으로 배치합니다. 늘려서 채우기는 비율을 무시합니다.",
-            width="stretch",
+            width="content",
         )
 
     background_option_cols = st.columns([1.4, 1, 1], vertical_alignment="bottom")
@@ -1142,6 +1170,7 @@ def render_compact_controls(
             step=1,
             key=rotation_key,
             help="양수는 시계 방향, 음수는 반시계 방향으로 회전합니다.",
+            width=CONTROL_WIDTH_LG,
         )
     with background_option_cols[1]:
         st.checkbox(
@@ -1172,6 +1201,7 @@ def render_compact_controls(
                 step=1,
                 key=key,
                 help="현재 Output 이미지 바깥쪽에 추가할 여백(px)입니다.",
+                width=CONTROL_WIDTH_SM,
             )
 
 
@@ -1232,7 +1262,7 @@ def save_output(item: dict[str, Any], png_bytes: bytes, width: int, height: int)
 
 def render_image_card(item: dict[str, Any]) -> None:
     with st.container(border=True):
-        st.markdown(f"**{item['name']}**")
+        st.write(f"**{item['name']}**")
         if item.get("kind") == "sprite":
             st.caption(
                 f"{item['parent_name']} · sprite #{item['sprite_index']} · "
@@ -1337,13 +1367,13 @@ def render_image_card(item: dict[str, Any]) -> None:
                 file_name=output_name,
                 mime="image/png",
                 key=image_state_key(item["id"], "download"),
-                use_container_width=True,
+                width=CONTROL_WIDTH_MD,
             )
         with action_cols[1]:
             if st.button(
                 "저장",
                 key=image_state_key(item["id"], "save"),
-                use_container_width=True,
+                width=CONTROL_WIDTH_MD,
             ):
                 output_path = save_output(
                     item,
@@ -1355,17 +1385,24 @@ def render_image_card(item: dict[str, Any]) -> None:
 
 
 def render_cut_fit_tab() -> None:
-    upload_cols = st.columns([1.4, 1], vertical_alignment="top")
-    with upload_cols[0]:
-        uploaded_files = st.file_uploader(
-            "이미지 업로드",
-            type=["png", "jpg", "jpeg", "webp"],
-            accept_multiple_files=True,
-            key="cut_fit_uploads",
-        )
-    with upload_cols[1]:
-        pasted_images = render_clipboard_upload(
-            component_key="cut_fit_clipboard_image",
+    with st.container(border=True):
+        upload_cols = st.columns([1.25, 1], vertical_alignment="top")
+        with upload_cols[0]:
+            uploaded_files = st.file_uploader(
+                "이미지 업로드",
+                type=["png", "jpg", "jpeg", "webp"],
+                accept_multiple_files=True,
+                key="cut_fit_uploads",
+                width=CONTROL_WIDTH_XL,
+            )
+        with upload_cols[1]:
+            st.caption("클립보드")
+            pasted_images = render_clipboard_upload(
+                component_key="cut_fit_clipboard_image",
+            )
+
+        render_clipboard_image_manager(
+            pasted_images,
             clear_key="cut_fit_clear_clipboard_images",
         )
 
@@ -1389,6 +1426,7 @@ def render_cut_fit_tab() -> None:
                     format_func=lambda value: MODEL_OPTIONS[value],
                     key="sheet_model_name",
                     help="모델 선택하지 않음은 배경 제거 없이 원본 alpha 연결 영역을 분리합니다.",
+                    width=CONTROL_WIDTH_LG,
                 )
                 sheet_model_disabled = sheet_settings["model_name"] == MODEL_NONE
             with sheet_cols[1]:
@@ -1398,6 +1436,7 @@ def render_cut_fit_tab() -> None:
                     max_value=254,
                     value=16,
                     key="sheet_alpha_threshold",
+                    width=CONTROL_WIDTH_LG,
                 )
             with sheet_cols[2]:
                 sheet_settings["preserve_interior"] = st.checkbox(
@@ -1422,6 +1461,7 @@ def render_cut_fit_tab() -> None:
                         value=64,
                         step=1,
                         key="sheet_min_area",
+                        width=CONTROL_WIDTH_SM,
                     )
                 )
 
@@ -1504,7 +1544,7 @@ def render_cut_fit_tab() -> None:
         render_image_card(uploaded_item)
 
     st.divider()
-    if st.button("모든 이미지 저장", type="primary", use_container_width=True):
+    if st.button("모든 이미지 저장", type="primary", width=CONTROL_WIDTH_MD):
         saved_paths: list[Path] = []
         errors: list[str] = []
         progress = st.progress(0, text="일괄 저장 준비 중...")
@@ -1543,21 +1583,29 @@ def render_cut_fit_tab() -> None:
 
 
 def render_sprite_sheet_make_mode() -> None:
-    upload_cols = st.columns([1.4, 1], vertical_alignment="top")
-    with upload_cols[0]:
-        sheet_files = st.file_uploader(
-            "스프라이트 시트용 이미지 업로드",
-            type=["png", "jpg", "jpeg", "webp"],
-            accept_multiple_files=True,
-            key="sprite_sheet_builder_uploads",
-            help="기존 이미지 편집 탭과 별개의 업로드 목록입니다.",
-        )
-    with upload_cols[1]:
-        pasted_images = render_clipboard_upload(
-            component_key="sprite_sheet_builder_clipboard_image",
+    with st.container(border=True):
+        upload_cols = st.columns([1.25, 1], vertical_alignment="top")
+        with upload_cols[0]:
+            sheet_files = st.file_uploader(
+                "스프라이트 시트용 이미지 업로드",
+                type=["png", "jpg", "jpeg", "webp"],
+                accept_multiple_files=True,
+                key="sprite_sheet_builder_uploads",
+                help="기존 이미지 편집 탭과 별개의 업로드 목록입니다.",
+                width=CONTROL_WIDTH_XL,
+            )
+        with upload_cols[1]:
+            st.caption("클립보드")
+            pasted_images = render_clipboard_upload(
+                component_key="sprite_sheet_builder_clipboard_image",
+                image_state_key=SPRITE_SHEET_BUILDER_CLIPBOARD_IMAGE_STATE_KEY,
+                seen_state_key=SPRITE_SHEET_BUILDER_CLIPBOARD_SEEN_STATE_KEY,
+            )
+
+        render_clipboard_image_manager(
+            pasted_images,
             clear_key="sprite_sheet_builder_clear_clipboard_images",
             image_state_key=SPRITE_SHEET_BUILDER_CLIPBOARD_IMAGE_STATE_KEY,
-            seen_state_key=SPRITE_SHEET_BUILDER_CLIPBOARD_SEEN_STATE_KEY,
         )
 
     uploaded_payloads = [
@@ -1570,19 +1618,53 @@ def render_sprite_sheet_make_mode() -> None:
         st.info("스프라이트 시트로 합칠 이미지를 업로드하거나 클립보드에서 붙여넣으세요.")
         return
 
-    control_cols = st.columns([1, 1, 1.6], vertical_alignment="bottom")
+    first_image_name, first_image_bytes = image_payloads[0]
+    first_image_width, first_image_height = image_size_for_payload(first_image_bytes)
+    target_width_key = "sprite_sheet_builder_first_image_target_width"
+    target_source_key = "sprite_sheet_builder_first_image_target_source"
+    first_image_source = hashlib.sha1(first_image_bytes).hexdigest()
+    if st.session_state.get(target_source_key) != first_image_source:
+        st.session_state[target_source_key] = first_image_source
+        st.session_state[target_width_key] = first_image_width
+
+    control_cols = st.columns([1.2, 1, 1, 1.6], vertical_alignment="bottom")
     with control_cols[0]:
-        scale_factor = st.number_input(
-            "Scale",
-            min_value=0.05,
-            max_value=16.0,
-            value=1.0,
-            step=0.05,
-            format="%.2f",
-            key="sprite_sheet_builder_scale",
-            help="완성된 스프라이트 시트 전체를 몇 배로 조정할지 정합니다.",
+        scale_mode = st.segmented_control(
+            "스케일 기준",
+            options=["scale", "first_width"],
+            format_func=lambda value: {
+                "scale": "직접 Scale",
+                "first_width": "첫 이미지 가로",
+            }[value],
+            default="scale",
+            key="sprite_sheet_builder_scale_mode",
+            width="stretch",
         )
     with control_cols[1]:
+        if scale_mode == "first_width":
+            target_first_width = int(
+                st.number_input(
+                    "첫 이미지 목표 가로(px)",
+                    min_value=1,
+                    max_value=MAX_OUTPUT_SIZE,
+                    step=1,
+                    key=target_width_key,
+                    help="첫 번째 이미지의 원본 가로폭을 이 값에 맞추도록 전체 스케일을 계산합니다.",
+                )
+            )
+            scale_factor = target_first_width / first_image_width
+        else:
+            scale_factor = st.number_input(
+                "Scale",
+                min_value=0.05,
+                max_value=16.0,
+                value=1.0,
+                step=0.05,
+                format="%.2f",
+                key="sprite_sheet_builder_scale",
+                help="완성된 스프라이트 시트 전체를 몇 배로 조정할지 정합니다.",
+            )
+    with control_cols[2]:
         gap = int(
             st.number_input(
                 "간격(px)",
@@ -1594,7 +1676,7 @@ def render_sprite_sheet_make_mode() -> None:
                 help="각 이미지 셀 사이에 넣을 투명 간격입니다.",
             )
         )
-    with control_cols[2]:
+    with control_cols[3]:
         resampling = st.segmented_control(
             "스케일 방식",
             options=list(SPRITE_SHEET_RESAMPLE_OPTIONS.keys()),
@@ -1605,6 +1687,12 @@ def render_sprite_sheet_make_mode() -> None:
         )
     if resampling is None:
         resampling = "nearest"
+
+    st.caption(
+        f"첫 이미지={first_image_name} · "
+        f"원본={first_image_width}x{first_image_height}px · "
+        f"적용 scale={float(scale_factor):.4f}x"
+    )
 
     try:
         with st.spinner("스프라이트 시트 생성 중..."):
@@ -1649,13 +1737,13 @@ def render_sprite_sheet_make_mode() -> None:
             file_name=output_name,
             mime="image/png",
             key="sprite_sheet_builder_download",
-            use_container_width=True,
+            width="stretch",
         )
     with action_cols[1]:
         if st.button(
             "저장",
             key="sprite_sheet_builder_save",
-            use_container_width=True,
+            width="stretch",
         ):
             OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
             output_path = unique_output_path(OUTPUT_DIR / output_name)
@@ -1663,7 +1751,7 @@ def render_sprite_sheet_make_mode() -> None:
             st.success(f"저장됨: {output_path}")
 
     with st.expander("배치 정보"):
-        st.dataframe(sheet["placements"], use_container_width=True, hide_index=True)
+        st.dataframe(sheet["placements"], width="stretch", hide_index=True)
 
 
 def render_sprite_sheet_recover_mode() -> None:
@@ -1789,7 +1877,7 @@ def render_sprite_sheet_recover_mode() -> None:
                 }
                 for sprite in sprites
             ],
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -1892,7 +1980,7 @@ def render_tileset_guide_tab() -> None:
         )
     with download_cols[1]:
         with st.expander("타일 박스"):
-            st.dataframe(guide["tiles"], use_container_width=True, hide_index=True)
+            st.dataframe(guide["tiles"], width="stretch", hide_index=True)
 
     st.divider()
 
@@ -1962,9 +2050,6 @@ def render_tileset_guide_tab() -> None:
 
 
 st.set_page_config(page_title="Image Cut Fit", layout="wide")
-render_preview_styles()
-
-st.title("Image Cut Fit")
 
 cut_fit_tab, sprite_sheet_builder_tab, tileset_guide_tab = st.tabs(
     ["이미지 컷/핏", "스프라이트 시트 만들기", "타일셋 가이드"]
