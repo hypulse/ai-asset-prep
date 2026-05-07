@@ -3,6 +3,42 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      background: transparent;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    #paste-area {
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 68px;
+      padding: 8px 12px;
+      border: 1px dashed rgba(49, 51, 63, 0.35);
+      border-radius: 8px;
+      background: rgb(250, 250, 250);
+      color: rgb(49, 51, 63);
+      cursor: text;
+      text-align: center;
+      font: inherit;
+      line-height: 1.25;
+    }
+
+    #paste-area:hover,
+    #paste-area:focus {
+      border-color: rgb(255, 75, 75);
+      background: rgb(255, 255, 255);
+      outline: none;
+    }
+
+    #paste-area small {
+      color: rgba(49, 51, 63, 0.72);
+      font-size: 12px;
+    }
+  </style>
 </head>
 <body>
   <button id="paste-area" type="button" aria-label="클립보드 이미지 붙여넣기">
