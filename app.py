@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import math
 import re
 import zipfile
 from io import BytesIO
@@ -73,6 +74,9 @@ SPRITE_SHEET_RESAMPLE_OPTIONS = {
     "nearest": "Nearest - 픽셀 유지",
     "lanczos": "Lanczos - 부드럽게",
 }
+SPRITE_SHEET_SCALE_MIN = 0.05
+SPRITE_SHEET_SCALE_MAX = 16.0
+SPRITE_SHEET_DEFAULT_SCALE = 1.0
 TILESET_GUIDE_LAYOUT = (
     (
         ("TL", "top_left", "위쪽 왼쪽 모서리"),
@@ -202,6 +206,42 @@ def format_file_size(byte_count: int) -> str:
     if byte_count < 1024 * 1024:
         return f"{byte_count / 1024:.1f} KB"
     return f"{byte_count / (1024 * 1024):.1f} MB"
+
+
+def normalize_sprite_sheet_scale(value: Any) -> float:
+    try:
+        scale = float(value)
+    except (TypeError, ValueError):
+        return SPRITE_SHEET_DEFAULT_SCALE
+    if not math.isfinite(scale):
+        return SPRITE_SHEET_DEFAULT_SCALE
+    return min(max(scale, SPRITE_SHEET_SCALE_MIN), SPRITE_SHEET_SCALE_MAX)
+
+
+def scaled_size(size: tuple[int, int], scale: float) -> tuple[int, int]:
+    width, height = size
+    return max(1, round(width * scale)), max(1, round(height * scale))
+
+
+def resize_by_scale(
+    image: Image.Image,
+    scale: float,
+    resampling: str,
+    *,
+    file_name: str,
+) -> Image.Image:
+    if scale <= 0:
+        raise ValueError(f"{file_name}: 개별 이미지 scale은 0보다 커야 합니다.")
+
+    target_size = scaled_size(image.size, scale)
+    if target_size[0] > MAX_OUTPUT_SIZE or target_size[1] > MAX_OUTPUT_SIZE:
+        raise ValueError(
+            f"{file_name}: 개별 scale 적용 후 최대 크기 {MAX_OUTPUT_SIZE}px를 넘습니다: "
+            f"{target_size[0]}x{target_size[1]}px"
+        )
+    if target_size == image.size:
+        return image
+    return image.resize(target_size, resampling_filter(resampling))
 
 
 def ensure_clipboard_state(image_state_key: str, seen_state_key: str) -> None:
@@ -776,15 +816,24 @@ def process_sprite_sheet(
 
 @st.cache_data(show_spinner=False)
 def build_combined_sprite_sheet(
-    image_payloads: tuple[tuple[str, bytes], ...],
+    image_payloads: tuple[tuple[str, bytes, float], ...],
     scale_factor: float,
     gap: int,
     resampling: str,
 ):
     images: list[Image.Image] = []
-    for file_name, image_bytes in image_payloads:
+    prepared_sources: list[tuple[str, tuple[int, int], float]] = []
+    for file_name, image_bytes, source_scale in image_payloads:
         image = load_image(image_bytes)
+        original_size = image.size
+        image = resize_by_scale(
+            image,
+            float(source_scale),
+            resampling,
+            file_name=file_name,
+        )
         images.append(image)
+        prepared_sources.append((file_name, original_size, float(source_scale)))
 
     result = build_square_sprite_sheet(
         images,
@@ -794,8 +843,8 @@ def build_combined_sprite_sheet(
         max_dimension=MAX_OUTPUT_SIZE,
     )
     placements = []
-    for (file_name, _), placement in zip(
-        image_payloads,
+    for (file_name, original_size, source_scale), placement in zip(
+        prepared_sources,
         result.placements,
         strict=True,
     ):
@@ -805,7 +854,11 @@ def build_combined_sprite_sheet(
             {
                 "index": placement.index + 1,
                 "file": file_name,
-                "source": f"{placement.source_size[0]}x{placement.source_size[1]}",
+                "source_scale": f"{source_scale:.2f}x",
+                "source": (
+                    f"{original_size[0]}x{original_size[1]} -> "
+                    f"{placement.source_size[0]}x{placement.source_size[1]}"
+                ),
                 "cell": f"({cell_x0}, {cell_y0})-({cell_x1}, {cell_y1})",
                 "paste": f"({paste_x0}, {paste_y0})-({paste_x1}, {paste_y1})",
             }
@@ -828,6 +881,78 @@ def build_combined_sprite_sheet(
 @st.cache_data(show_spinner=False)
 def image_size_for_payload(image_bytes: bytes) -> tuple[int, int]:
     return load_image(image_bytes).size
+
+
+def sprite_sheet_source_item(
+    *,
+    source: str,
+    name: str,
+    image_bytes: bytes,
+) -> dict[str, Any]:
+    digest = hashlib.sha1(image_bytes).hexdigest()
+    identity = hashlib.sha1(f"{source}:{name}:{digest}".encode("utf-8")).hexdigest()
+    return {
+        "id": identity[:16],
+        "source": source,
+        "name": name,
+        "bytes": image_bytes,
+        "digest": digest,
+    }
+
+
+def render_sprite_sheet_source_scale_controls(
+    source_items: tuple[dict[str, Any], ...],
+) -> tuple[tuple[str, bytes, float], ...]:
+    scaled_payloads: list[tuple[str, bytes, float]] = []
+    if not source_items:
+        return tuple(scaled_payloads)
+
+    with st.expander("개별 이미지 사전 Scale", expanded=True):
+        st.caption("업로드/붙여넣기 이미지마다 스프라이트 시트에 넣기 전 scale을 적용합니다.")
+        for item in source_items:
+            scale_key = f"sprite_sheet_builder_source_scale_{item['id']}"
+            st.session_state[scale_key] = normalize_sprite_sheet_scale(
+                st.session_state.get(scale_key, SPRITE_SHEET_DEFAULT_SCALE)
+            )
+
+            image_bytes = item["bytes"]
+            source_size = image_size_for_payload(image_bytes)
+            thumbnail = process_original_preview(image_bytes)
+            source_scale = float(st.session_state[scale_key])
+            source_label = "붙여넣기" if item["source"] == "clipboard" else "첨부"
+
+            row_cols = st.columns(
+                [0.09, 0.47, 0.18, 0.26],
+                vertical_alignment="center",
+            )
+            with row_cols[0]:
+                st.image(thumbnail["preview_bytes"], width=42)
+            with row_cols[1]:
+                st.write(item["name"])
+                st.caption(
+                    f"{source_label} · 원본={source_size[0]}x{source_size[1]}px"
+                )
+            with row_cols[2]:
+                source_scale = float(
+                    st.number_input(
+                        f"{item['name']} 사전 Scale",
+                        min_value=SPRITE_SHEET_SCALE_MIN,
+                        max_value=SPRITE_SHEET_SCALE_MAX,
+                        step=0.05,
+                        format="%.2f",
+                        key=scale_key,
+                        label_visibility="collapsed",
+                    )
+                )
+            with row_cols[3]:
+                output_size = scaled_size(source_size, source_scale)
+                st.caption(
+                    f"{source_scale:.2f}x -> {output_size[0]}x{output_size[1]}px"
+                )
+
+            scaled_payloads.append((item["name"], image_bytes, source_scale))
+
+    return tuple(scaled_payloads)
 
 
 @st.cache_data(show_spinner=False)
@@ -2199,24 +2324,42 @@ def render_sprite_sheet_make_mode() -> None:
             image_state_key=SPRITE_SHEET_BUILDER_CLIPBOARD_IMAGE_STATE_KEY,
         )
 
-    uploaded_payloads = [
-        (sheet_file.name, sheet_file.getvalue()) for sheet_file in sheet_files or []
-    ]
-    pasted_payloads = [(image["name"], image["bytes"]) for image in pasted_images]
-    image_payloads = tuple(uploaded_payloads + pasted_payloads)
+    uploaded_items = tuple(
+        sprite_sheet_source_item(
+            source="upload",
+            name=sheet_file.name,
+            image_bytes=sheet_file.getvalue(),
+        )
+        for sheet_file in sheet_files or []
+    )
+    pasted_items = tuple(
+        sprite_sheet_source_item(
+            source="clipboard",
+            name=image["name"],
+            image_bytes=image["bytes"],
+        )
+        for image in pasted_images
+    )
+    source_items = uploaded_items + pasted_items
 
-    if not image_payloads:
+    if not source_items:
         st.info("스프라이트 시트로 합칠 이미지를 업로드하거나 클립보드에서 붙여넣으세요.")
         return
 
-    first_image_name, first_image_bytes = image_payloads[0]
+    image_payloads = render_sprite_sheet_source_scale_controls(source_items)
+
+    first_image_name, first_image_bytes, first_source_scale = image_payloads[0]
     first_image_width, first_image_height = image_size_for_payload(first_image_bytes)
+    first_scaled_width, first_scaled_height = scaled_size(
+        (first_image_width, first_image_height),
+        float(first_source_scale),
+    )
     target_width_key = "sprite_sheet_builder_first_image_target_width"
     target_source_key = "sprite_sheet_builder_first_image_target_source"
     first_image_source = hashlib.sha1(first_image_bytes).hexdigest()
     if st.session_state.get(target_source_key) != first_image_source:
         st.session_state[target_source_key] = first_image_source
-        st.session_state[target_width_key] = first_image_width
+        st.session_state[target_width_key] = first_scaled_width
 
     control_cols = st.columns([1.2, 1, 1, 1.6], vertical_alignment="bottom")
     with control_cols[0]:
@@ -2240,20 +2383,20 @@ def render_sprite_sheet_make_mode() -> None:
                     max_value=MAX_OUTPUT_SIZE,
                     step=1,
                     key=target_width_key,
-                    help="첫 번째 이미지의 원본 가로폭을 이 값에 맞추도록 전체 스케일을 계산합니다.",
+                    help="첫 번째 이미지에 개별 사전 scale을 적용한 뒤, 가로폭을 이 값에 맞추도록 전체 스케일을 계산합니다.",
                 )
             )
-            scale_factor = target_first_width / first_image_width
+            scale_factor = target_first_width / first_scaled_width
         else:
             scale_factor = st.number_input(
-                "Scale",
-                min_value=0.05,
-                max_value=16.0,
+                "시트 Scale",
+                min_value=SPRITE_SHEET_SCALE_MIN,
+                max_value=SPRITE_SHEET_SCALE_MAX,
                 value=1.0,
                 step=0.05,
                 format="%.2f",
                 key="sprite_sheet_builder_scale",
-                help="완성된 스프라이트 시트 전체를 몇 배로 조정할지 정합니다.",
+                help="개별 이미지 사전 scale 적용 후 완성된 스프라이트 시트 전체를 몇 배로 조정할지 정합니다.",
             )
     with control_cols[2]:
         gap = int(
@@ -2282,7 +2425,8 @@ def render_sprite_sheet_make_mode() -> None:
     st.caption(
         f"첫 이미지={first_image_name} · "
         f"원본={first_image_width}x{first_image_height}px · "
-        f"적용 scale={float(scale_factor):.4f}x"
+        f"사전={first_scaled_width}x{first_scaled_height}px · "
+        f"시트 scale={float(scale_factor):.4f}x"
     )
 
     try:
