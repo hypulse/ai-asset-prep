@@ -13,6 +13,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from PIL import Image, ImageDraw
 
+import image_tasks
 from image_pipeline import (
     apply_erase_mask,
     apply_padding_and_background,
@@ -457,31 +458,12 @@ def build_tileset_guide_background(
     margin: int,
     line_width: int,
 ):
-    width, height = tileset_guide_size(tile_size, gap, margin)
-    if width > MAX_OUTPUT_SIZE or height > MAX_OUTPUT_SIZE:
-        raise ValueError(
-            f"가이드 크기가 최대 {MAX_OUTPUT_SIZE}px를 넘습니다: {width}x{height}px"
-        )
-
-    image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(image)
-    columns = max(len(row) for row in TILESET_GUIDE_LAYOUT)
-    rows = len(TILESET_GUIDE_LAYOUT)
-    line_color = (255, 75, 75, 230)
-
-    for column in range(columns + 1):
-        x = min(margin + column * (tile_size + gap), width - 1)
-        draw.line((x, 0, x, height - 1), fill=line_color, width=line_width)
-
-    for row in range(rows + 1):
-        y = min(margin + row * (tile_size + gap), height - 1)
-        draw.line((0, y, width - 1, y), fill=line_color, width=line_width)
-
-    return {
-        "png_bytes": image_to_png_bytes(image),
-        "size": image.size,
-        "tiles": tileset_guide_table(tile_size, gap, margin),
-    }
+    return image_tasks.build_tileset_guide_background(
+        tile_size,
+        gap=gap,
+        margin=margin,
+        line_width=line_width,
+    )
 
 
 @st.cache_data(show_spinner=False)
@@ -493,46 +475,14 @@ def slice_tileset_guide_image(
     file_prefix: str,
     skip_transparent_tiles: bool,
 ):
-    source = load_image(image_bytes)
-    expected_width, expected_height = tileset_guide_size(tile_size, gap, margin)
-    if source.width < expected_width or source.height < expected_height:
-        raise ValueError(
-            "입력 이미지가 현재 가이드 설정보다 작습니다: "
-            f"입력={source.width}x{source.height}px, "
-            f"필요={expected_width}x{expected_height}px"
-        )
-
-    prefix = safe_stem(file_prefix)
-    tiles = []
-    for spec in tileset_guide_specs(tile_size, gap, margin):
-        tile = source.crop(spec["box"])
-        if skip_transparent_tiles and tile.getchannel("A").getbbox() is None:
-            continue
-
-        file_name = f"{prefix}_{spec['file_stem']}.png"
-        png_bytes = image_to_png_bytes(tile)
-        tiles.append(
-            {
-                "code": spec["code"],
-                "file": file_name,
-                "description": spec["description"],
-                "size": f"{tile.width}x{tile.height}",
-                "png_bytes": png_bytes,
-                "preview_bytes": checkerboard_preview(tile),
-            }
-        )
-
-    zip_buffer = BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for tile in tiles:
-            archive.writestr(tile["file"], tile["png_bytes"])
-
-    return {
-        "tiles": tiles,
-        "zip_bytes": zip_buffer.getvalue(),
-        "source_size": source.size,
-        "expected_size": (expected_width, expected_height),
-    }
+    return image_tasks.slice_tileset_guide_image(
+        image_bytes,
+        tile_size,
+        gap=gap,
+        margin=margin,
+        file_prefix=file_prefix,
+        skip_transparent_tiles=skip_transparent_tiles,
+    )
 
 @st.cache_resource(show_spinner=False)
 def get_rembg_session(model_name: str):
@@ -558,68 +508,20 @@ def process_crop(
     preserve_interior: bool,
     post_process_mask: bool,
 ):
-    if model_name == MODEL_NONE:
-        return process_alpha_crop(image_bytes, alpha_threshold)
-
-    fallback_reason = ""
-    try:
-        result = remove_background_and_crop(
-            image_bytes,
-            alpha_threshold=alpha_threshold,
-            preserve_interior=preserve_interior,
-            post_process_mask=post_process_mask,
-            session=get_rembg_session(model_name),
-        )
-    except ValueError as exc:
-        source = load_image(image_bytes)
-        try:
-            cropped, bbox = crop_to_alpha_bbox(source, alpha_threshold=alpha_threshold)
-        except ValueError:
-            cropped = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
-            bbox = (0, 0, 1, 1)
-
-        fallback_reason = f"모델 crop 실패, 원본 기준으로 편집합니다: {exc}"
-        return {
-            "png_bytes": image_to_png_bytes(cropped),
-            "preview_bytes": checkerboard_preview(cropped),
-            "bbox": bbox,
-            "source_size": source.size,
-            "cropped_size": cropped.size,
-            "removed_size": source.size,
-            "fallback_reason": fallback_reason,
-        }
-
-    return {
-        "png_bytes": result.png_bytes,
-        "preview_bytes": checkerboard_preview(result.cropped),
-        "bbox": result.bbox,
-        "source_size": result.source_size,
-        "cropped_size": result.cropped.size,
-        "removed_size": result.removed_background.size,
-        "fallback_reason": fallback_reason,
-    }
+    session = None if model_name == MODEL_NONE else get_rembg_session(model_name)
+    return image_tasks.process_crop(
+        image_bytes,
+        alpha_threshold=alpha_threshold,
+        model_name=model_name,
+        preserve_interior=preserve_interior,
+        post_process_mask=post_process_mask,
+        session=session,
+    )
 
 
 @st.cache_data(show_spinner=False)
 def process_alpha_crop(image_bytes: bytes, alpha_threshold: int):
-    source = load_image(image_bytes)
-    try:
-        cropped, bbox = crop_to_alpha_bbox(source, alpha_threshold=alpha_threshold)
-        fallback_reason = ""
-    except ValueError as exc:
-        cropped = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
-        bbox = (0, 0, 1, 1)
-        fallback_reason = f"원본 crop 실패, 투명 이미지로 편집합니다: {exc}"
-
-    return {
-        "png_bytes": image_to_png_bytes(cropped),
-        "preview_bytes": checkerboard_preview(cropped),
-        "bbox": bbox,
-        "source_size": source.size,
-        "cropped_size": cropped.size,
-        "removed_size": source.size,
-        "fallback_reason": fallback_reason,
-    }
+    return image_tasks.process_alpha_crop(image_bytes, alpha_threshold)
 
 
 @st.cache_data(show_spinner=False)
@@ -821,61 +723,12 @@ def build_combined_sprite_sheet(
     gap: int,
     resampling: str,
 ):
-    images: list[Image.Image] = []
-    prepared_sources: list[tuple[str, tuple[int, int], float]] = []
-    for file_name, image_bytes, source_scale in image_payloads:
-        image = load_image(image_bytes)
-        original_size = image.size
-        image = resize_by_scale(
-            image,
-            float(source_scale),
-            resampling,
-            file_name=file_name,
-        )
-        images.append(image)
-        prepared_sources.append((file_name, original_size, float(source_scale)))
-
-    result = build_square_sprite_sheet(
-        images,
-        scale=float(scale_factor),
-        gap=int(gap),
+    return image_tasks.build_combined_sprite_sheet(
+        image_payloads,
+        scale_factor=scale_factor,
+        gap=gap,
         resampling=resampling,
-        max_dimension=MAX_OUTPUT_SIZE,
     )
-    placements = []
-    for (file_name, original_size, source_scale), placement in zip(
-        prepared_sources,
-        result.placements,
-        strict=True,
-    ):
-        paste_x0, paste_y0, paste_x1, paste_y1 = placement.paste_box
-        cell_x0, cell_y0, cell_x1, cell_y1 = placement.cell_box
-        placements.append(
-            {
-                "index": placement.index + 1,
-                "file": file_name,
-                "source_scale": f"{source_scale:.2f}x",
-                "source": (
-                    f"{original_size[0]}x{original_size[1]} -> "
-                    f"{placement.source_size[0]}x{placement.source_size[1]}"
-                ),
-                "cell": f"({cell_x0}, {cell_y0})-({cell_x1}, {cell_y1})",
-                "paste": f"({paste_x0}, {paste_y0})-({paste_x1}, {paste_y1})",
-            }
-        )
-
-    return {
-        "png_bytes": result.png_bytes,
-        "preview_bytes": checkerboard_preview(result.image),
-        "unscaled_size": result.unscaled_size,
-        "scaled_size": result.scaled_size,
-        "cell_size": result.cell_size,
-        "columns": result.columns,
-        "rows": result.rows,
-        "gap": result.gap,
-        "scale": result.scale,
-        "placements": placements,
-    }
 
 
 @st.cache_data(show_spinner=False)
@@ -964,56 +817,14 @@ def recover_sprite_sheet(
     min_area: int,
     resampling: str,
 ):
-    source = load_image(image_bytes)
-    scaled_size = (
-        max(1, round(source.width * scale_factor)),
-        max(1, round(source.height * scale_factor)),
-    )
-    if scaled_size[0] > MAX_OUTPUT_SIZE or scaled_size[1] > MAX_OUTPUT_SIZE:
-        raise ValueError(
-            f"스케일 적용 후 최대 크기 {MAX_OUTPUT_SIZE}px를 넘습니다: "
-            f"{scaled_size[0]}x{scaled_size[1]}px"
-        )
-
-    scaled = source
-    if scaled.size != scaled_size:
-        scaled = source.resize(scaled_size, resampling_filter(resampling))
-
-    components = extract_connected_components(
-        scaled,
+    return image_tasks.recover_sprite_sheet(
+        image_bytes,
+        source_name,
+        scale_factor=scale_factor,
         alpha_threshold=alpha_threshold,
         min_area=min_area,
+        resampling=resampling,
     )
-    prefix = safe_stem(source_name)
-    sprites = []
-    for index, component in enumerate(components, start=1):
-        file_name = f"{prefix}_sprite_{index:02d}.png"
-        png_bytes = component.png_bytes
-        sprites.append(
-            {
-                "index": index,
-                "file": file_name,
-                "bbox": component.bbox,
-                "area": component.area,
-                "size": component.image.size,
-                "png_bytes": png_bytes,
-                "preview_bytes": checkerboard_preview(component.image),
-            }
-        )
-
-    zip_buffer = BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for sprite in sprites:
-            archive.writestr(sprite["file"], sprite["png_bytes"])
-
-    return {
-        "scaled_png_bytes": image_to_png_bytes(scaled),
-        "scaled_preview_bytes": checkerboard_preview(scaled),
-        "source_size": source.size,
-        "scaled_size": scaled.size,
-        "sprites": sprites,
-        "zip_bytes": zip_buffer.getvalue(),
-    }
 
 
 @st.cache_data(show_spinner=False)
@@ -1029,15 +840,11 @@ def build_output_image(
     transparent_background: bool,
     background_color: str,
 ):
-    cropped = Image.open(BytesIO(cropped_png_bytes)).convert("RGBA")
-    resized = resize_to_target(
-        cropped,
+    return image_tasks.build_output_image(
+        cropped_png_bytes,
         width=width,
         height=height,
-        mode=resize_mode,
-    )
-    output = apply_padding_and_background(
-        resized,
+        resize_mode=resize_mode,
         padding_top=padding_top,
         padding_right=padding_right,
         padding_bottom=padding_bottom,
@@ -1045,12 +852,6 @@ def build_output_image(
         transparent_background=transparent_background,
         background_color=background_color,
     )
-    return {
-        "png_bytes": image_to_png_bytes(output),
-        "preview_bytes": checkerboard_preview(output),
-        "resized_size": resized.size,
-        "size": output.size,
-    }
 
 
 def image_state_key(image_id: str, name: str) -> str:
