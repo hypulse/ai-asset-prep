@@ -19,7 +19,20 @@ def crop_image(
     preserve_interior: bool = True,
     post_process_mask: bool = True,
 ) -> dict[str, Any]:
-    """Remove the background when requested, crop to visible alpha, and write a PNG."""
+    """Crop an image to its visible non-transparent pixels and optionally remove its background.
+
+    Use this when the user asks to remove an image background, trim transparent
+    whitespace, crop to the alpha bounds, or prepare a transparent PNG asset.
+    Prefer absolute file paths. If output_path is omitted, the PNG is written
+    under /Users/seungjae/Codes/image-cut-fit/outputs with a unique filename.
+
+    Set model_name to "u2net" for the default rembg background removal,
+    "isnet-general-use" for general image preservation, "isnet-anime" for
+    anime/illustration style images, or "none" when the input already has
+    transparency and only alpha-crop is needed. alpha_threshold defaults to 16.
+    Returns output path, bbox, source size, cropped size, removed size, model,
+    alpha threshold, and any fallback reason.
+    """
     return image_tasks.crop_image(
         input_path,
         output_path,
@@ -46,7 +59,24 @@ def fit_image(
     transparent_background: bool = True,
     background_color: str = "#000000",
 ) -> dict[str, Any]:
-    """Rotate, resize, pad, and write a PNG."""
+    """Resize an image to an exact width and height, with optional rotation and padding.
+
+    Use this when the user asks for a specific final PNG size such as 1280x720,
+    24x24, or 36x36. This tool does not remove backgrounds; call crop_image
+    first if background removal or alpha trimming is needed. Prefer absolute
+    input_path and output_path values. If output_path is omitted, the PNG is
+    written under /Users/seungjae/Codes/image-cut-fit/outputs with a unique
+    filename.
+
+    resize_mode must be one of: "contain_center", "contain_top",
+    "contain_bottom", "contain_left", "contain_right", or "stretch".
+    contain_* preserves aspect ratio and places the image inside the target
+    canvas; stretch distorts to fill exactly. rotation_degrees rotates before
+    resizing. Padding is added after resizing. If transparent_background is
+    false, background_color is used for the canvas. Returns output path,
+    source/rotated/resized/final sizes, resize mode, rotation, padding, and
+    background settings.
+    """
     return image_tasks.fit_image(
         input_path,
         output_path,
@@ -75,7 +105,24 @@ def make_sprite_sheet(
     gap: int = 0,
     resampling: str = "nearest",
 ) -> dict[str, Any]:
-    """Combine PNG/JPG/WebP inputs into a square-ish transparent sprite sheet."""
+    """Combine multiple images into a square-ish transparent sprite sheet.
+
+    Use this when the user asks to make a sprite sheet, combine several PNGs
+    into one sheet, preserve pixel art, or pack mixed-size game assets. Provide
+    input_paths in the desired order. Prefer absolute paths. If output_path is
+    omitted, the PNG is written under /Users/seungjae/Codes/image-cut-fit/outputs
+    with a unique filename. If metadata_path is provided, placement metadata is
+    also written as JSON.
+
+    source_scales controls per-image pre-scale before packing. It may be null,
+    a single value applied to every input, or one value per input. Use this for
+    mixed-size assets before the final whole-sheet scale. scale is applied after
+    packing. first_width, when provided, overrides scale by calculating the final
+    sheet scale from the first image's post-source-scale width. gap is transparent
+    spacing between cells. resampling should usually be "nearest" for pixel art
+    and "lanczos" for smooth scaling. Returns output path, sheet sizes, cell
+    size, grid dimensions, gap, scale, source scales, and per-image placements.
+    """
     return image_tasks.make_sprite_sheet(
         input_paths,
         output_path,
@@ -98,7 +145,22 @@ def recover_sprite_sheet(
     min_area: int = 16,
     resampling: str = "nearest",
 ) -> dict[str, Any]:
-    """Scale a transparent sheet and split connected alpha components into PNGs."""
+    """Split a transparent sprite sheet into individual connected alpha components.
+
+    Use this when the user asks to recover sprites from a sheet, split a cursor
+    or character sheet, or inspect individual silhouettes from one transparent
+    PNG. Prefer absolute input_path and output_dir values. If output_dir is
+    omitted, files are written under /Users/seungjae/Codes/image-cut-fit/outputs
+    in a unique sprite directory. If metadata_path is provided, split metadata is
+    also written as JSON.
+
+    The tool first scales the whole sheet by scale, then detects connected
+    components whose alpha is greater than alpha_threshold and whose area is at
+    least min_area. For tiny cursor assets, useful values are often scale=0.25,
+    alpha_threshold=16, min_area=16, resampling="nearest". Returns output_dir,
+    scaled sheet path, source/scaled sizes, sprite count, and each sprite's file,
+    bbox, area, and size.
+    """
     return image_tasks.recover_sprite_sheet_to_dir(
         input_path,
         output_dir,
@@ -120,7 +182,19 @@ def make_tileset_guide(
     margin: int = 0,
     line_width: int = 1,
 ) -> dict[str, Any]:
-    """Create the 3x3 tileset guide PNG."""
+    """Create a 3x3 transparent tileset guide PNG for drawing or filling tile art.
+
+    Use this when the user asks for a tileset guide, a 3x3 tile template, or a
+    guide image that can later be sliced into top/center/bottom/corner tiles.
+    If output_path is omitted, the PNG is written under
+    /Users/seungjae/Codes/image-cut-fit/outputs with a unique filename. If
+    metadata_path is provided, tile box metadata is also written as JSON.
+
+    tile_size is the square tile size in pixels. prefix is used only for naming
+    outputs. gap and margin default to 0 for flush tile layouts. line_width
+    controls the red guide lines. Returns output path, guide size, tile_size,
+    gap, margin, line_width, and the 9 tile boxes.
+    """
     return image_tasks.make_tileset_guide(
         output_path,
         metadata_path=metadata_path,
@@ -143,7 +217,21 @@ def slice_tileset(
     margin: int = 0,
     skip_transparent_tiles: bool = False,
 ) -> dict[str, Any]:
-    """Slice a completed 3x3 tileset guide image into individual PNG tiles."""
+    """Slice a completed 3x3 tileset guide image into individual tile PNG files.
+
+    Use this after make_tileset_guide when the user has filled or edited the
+    guide image and wants separate tile PNGs. The tile_size, gap, and margin
+    values must match the guide settings used to create the image. Prefer
+    absolute input_path and output_dir values. If output_dir is omitted, files
+    are written under /Users/seungjae/Codes/image-cut-fit/outputs in a tile
+    directory. If metadata_path is provided, slice metadata is also written as
+    JSON.
+
+    prefix controls output filenames such as ground_top_left.png. Set
+    skip_transparent_tiles to true to omit fully transparent tiles. Returns
+    output_dir, source size, expected guide size, tile count, and each tile's
+    code, output file path, description, and size.
+    """
     return image_tasks.slice_tileset(
         input_path,
         output_dir,
