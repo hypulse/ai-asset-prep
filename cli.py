@@ -44,6 +44,28 @@ def resolved_padding(args: argparse.Namespace) -> dict[str, int]:
     }
 
 
+def read_generate_prompt(args: argparse.Namespace) -> str:
+    if args.prompt and args.prompt_file:
+        raise ValueError("Use either --prompt or --prompt-file, not both.")
+    if args.prompt_file:
+        return args.prompt_file.read_text(encoding="utf-8").strip()
+    return (args.prompt or "").strip()
+
+
+def handle_generate(args: argparse.Namespace) -> dict[str, Any]:
+    prompt = read_generate_prompt(args)
+    return image_tasks.generate_image(
+        prompt,
+        args.output,
+        name=args.name,
+        model=args.model,
+        size=args.size,
+        quality=args.quality,
+        output_format=args.output_format,
+        background=args.background,
+    )
+
+
 def handle_crop(args: argparse.Namespace) -> dict[str, Any]:
     return image_tasks.crop_image(
         args.input,
@@ -126,6 +148,53 @@ def build_parser() -> argparse.ArgumentParser:
         description="AI Asset Prep image processing CLI.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    generate = subparsers.add_parser("generate", help="프롬프트로 이미지를 생성합니다.")
+    generate.add_argument("--prompt", help="이미지 프롬프트입니다.")
+    generate.add_argument(
+        "--prompt-file",
+        type=Path,
+        help="UTF-8 텍스트 파일에서 프롬프트를 읽습니다.",
+    )
+    generate.add_argument(
+        "--name",
+        help="출력 파일명 stem입니다. 생략하면 프롬프트 앞부분에서 만듭니다.",
+    )
+    generate.add_argument(
+        "--output",
+        "-o",
+        type=Path,
+        help="출력 파일 경로, 또는 확장자가 없으면 출력 디렉터리입니다.",
+    )
+    generate.add_argument(
+        "--model",
+        default=image_tasks.IMAGE_GENERATION_DEFAULT_MODEL,
+        help="OpenAI image model id.",
+    )
+    generate.add_argument(
+        "--size",
+        default=image_tasks.IMAGE_GENERATION_DEFAULT_SIZE,
+        help="WIDTHxHEIGHT 형식입니다. 선택한 모델이 지원해야 합니다.",
+    )
+    generate.add_argument(
+        "--quality",
+        choices=list(image_tasks.IMAGE_GENERATION_QUALITY_OPTIONS),
+        default=image_tasks.IMAGE_GENERATION_DEFAULT_QUALITY,
+    )
+    generate.add_argument(
+        "--output-format",
+        "--format",
+        dest="output_format",
+        choices=list(image_tasks.IMAGE_GENERATION_FORMAT_OPTIONS),
+        default=image_tasks.IMAGE_GENERATION_DEFAULT_FORMAT,
+    )
+    generate.add_argument(
+        "--background",
+        choices=list(image_tasks.IMAGE_GENERATION_BACKGROUND_OPTIONS),
+        default=None,
+        help="Optional background mode.",
+    )
+    generate.set_defaults(handler=handle_generate)
 
     crop = subparsers.add_parser("crop", help="배경 제거 또는 alpha 기준 crop.")
     crop.add_argument("input", type=Path)

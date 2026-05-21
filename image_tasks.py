@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import json
 import math
+import os
 import re
 import zipfile
 from functools import lru_cache
@@ -28,6 +30,14 @@ from image_pipeline import (
 PROJECT_DIR = Path(__file__).parent
 OUTPUT_DIR = PROJECT_DIR / "outputs"
 
+IMAGE_GENERATION_DEFAULT_MODEL = "gpt-image-1-mini"
+IMAGE_GENERATION_DEFAULT_SIZE = "1024x1024"
+IMAGE_GENERATION_DEFAULT_QUALITY = "low"
+IMAGE_GENERATION_DEFAULT_FORMAT = "png"
+IMAGE_GENERATION_QUALITY_OPTIONS = ("low", "medium", "high")
+IMAGE_GENERATION_FORMAT_OPTIONS = ("png", "jpeg", "webp")
+IMAGE_GENERATION_BACKGROUND_OPTIONS = ("opaque", "transparent")
+IMAGE_GENERATION_SIZE_PATTERN = re.compile(r"^[1-9][0-9]*x[1-9][0-9]*$")
 MODEL_NONE = "none"
 MODEL_OPTIONS = {
     "u2net": "u2net - 기본",
@@ -73,9 +83,44 @@ TILESET_GUIDE_LAYOUT = (
 )
 
 
+try:
+    from dotenv import load_dotenv
+except ImportError:
+
+    def load_dotenv(dotenv_path: Any = None, *_args: Any, **_kwargs: Any) -> bool:
+        if dotenv_path is None:
+            return False
+
+        path = Path(dotenv_path)
+        if not path.exists():
+            return False
+
+        loaded = False
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+
+            key, value = stripped.split("=", 1)
+            normalized_key = key.strip()
+            normalized_value = value.strip().strip("'\"")
+            if normalized_key and normalized_key not in os.environ:
+                os.environ[normalized_key] = normalized_value
+                loaded = True
+
+        return loaded
+
+
 def safe_stem(original_name: str) -> str:
     stem = Path(original_name).stem
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("._") or "image"
+
+
+def slugify(text: str, max_len: int = 80) -> str:
+    text = text.strip().lower()
+    text = re.sub(r"[^a-z0-9가-힣\s_-]", "", text)
+    text = re.sub(r"[\s_-]+", "_", text).strip("_")
+    return text[:max_len] if len(text) > max_len else text
 
 
 def safe_output_name(original_name: str, width: int, height: int) -> str:
@@ -104,6 +149,142 @@ def write_unique_bytes(path: Path, data: bytes) -> Path:
 def write_json(path: Path, payload: dict[str, Any]) -> Path:
     encoded = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
     return write_unique_bytes(path, encoded)
+
+
+def normalize_generation_size(value: str) -> str:
+    normalized = value.lower().strip()
+    if not IMAGE_GENERATION_SIZE_PATTERN.match(normalized):
+        raise ValueError("size must use WIDTHxHEIGHT format, for example 1024x1024.")
+    return normalized
+
+
+def normalize_generation_output_format(value: str) -> str:
+    normalized = value.lower().strip()
+    if normalized not in IMAGE_GENERATION_FORMAT_OPTIONS:
+        raise ValueError(
+            "output_format must be one of: "
+            + ", ".join(IMAGE_GENERATION_FORMAT_OPTIONS)
+        )
+    return normalized
+
+
+def normalize_generation_quality(value: str) -> str:
+    normalized = value.lower().strip()
+    if normalized not in IMAGE_GENERATION_QUALITY_OPTIONS:
+        raise ValueError(
+            "quality must be one of: " + ", ".join(IMAGE_GENERATION_QUALITY_OPTIONS)
+        )
+    return normalized
+
+
+def normalize_generation_background(value: str | None) -> str | None:
+    if value is None or value == "":
+        return None
+    normalized = value.lower().strip()
+    if normalized not in IMAGE_GENERATION_BACKGROUND_OPTIONS:
+        raise ValueError(
+            "background must be one of: "
+            + ", ".join(IMAGE_GENERATION_BACKGROUND_OPTIONS)
+        )
+    return normalized
+
+
+def load_openai_api_key() -> str:
+    load_dotenv(PROJECT_DIR / ".env")
+    load_dotenv(Path.cwd() / ".env")
+    load_dotenv()
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is missing. Set it in env or .env.")
+    return api_key
+
+
+def image_generation_output_path(
+    prompt: str,
+    output_path: str | Path | None = None,
+    *,
+    name: str | None = None,
+    output_format: str = IMAGE_GENERATION_DEFAULT_FORMAT,
+) -> Path:
+    output_format = normalize_generation_output_format(output_format)
+
+    if output_path:
+        path = Path(output_path).expanduser()
+        if path.suffix:
+            return path
+        stem = slugify(name or prompt[:60]) or "image"
+        return path / f"{stem}.{output_format}"
+
+    stem = slugify(name or prompt[:60])
+    if not stem:
+        raise ValueError("Output name became empty after sanitizing.")
+    return OUTPUT_DIR / f"{stem}.{output_format}"
+
+
+def generate_image_bytes(
+    prompt: str,
+    *,
+    model: str = IMAGE_GENERATION_DEFAULT_MODEL,
+    size: str = IMAGE_GENERATION_DEFAULT_SIZE,
+    quality: str = IMAGE_GENERATION_DEFAULT_QUALITY,
+    output_format: str = IMAGE_GENERATION_DEFAULT_FORMAT,
+    background: str | None = None,
+) -> bytes:
+    prompt = prompt.strip()
+    if not prompt:
+        raise ValueError("Prompt is required.")
+
+    size = normalize_generation_size(size)
+    quality = normalize_generation_quality(quality)
+    output_format = normalize_generation_output_format(output_format)
+    background = normalize_generation_background(background)
+
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        raise RuntimeError(
+            "openai package is missing. Install it with: pip install openai"
+        ) from exc
+
+    kwargs = {
+        "model": model,
+        "prompt": prompt,
+        "size": size,
+        "quality": quality,
+        "output_format": output_format,
+    }
+    if background is not None:
+        kwargs["background"] = background
+
+    client = OpenAI(api_key=load_openai_api_key())
+    result = client.images.generate(**kwargs)
+    if not result.data or not result.data[0].b64_json:
+        raise RuntimeError("No image payload returned from images.generate.")
+
+    return base64.b64decode(result.data[0].b64_json)
+
+
+def image_generation_metadata(
+    *,
+    prompt: str,
+    output: Path,
+    model: str,
+    size: str,
+    quality: str,
+    output_format: str,
+    background: str | None,
+) -> dict[str, Any]:
+    return {
+        "output": str(output),
+        "model": model,
+        "size": size,
+        "quality": quality,
+        "output_format": output_format,
+        "background": background,
+        "prompt": prompt,
+        "prompt_summary": prompt[:160],
+    }
 
 
 def shrink_for_preview(image: Image.Image) -> Image.Image:
@@ -580,6 +761,52 @@ def _json_ready(value: Any) -> Any:
             if not str(key).endswith("_bytes")
         }
     return value
+
+
+def generate_image(
+    prompt: str,
+    output_path: str | Path | None = None,
+    *,
+    name: str | None = None,
+    model: str = IMAGE_GENERATION_DEFAULT_MODEL,
+    size: str = IMAGE_GENERATION_DEFAULT_SIZE,
+    quality: str = IMAGE_GENERATION_DEFAULT_QUALITY,
+    output_format: str = IMAGE_GENERATION_DEFAULT_FORMAT,
+    background: str | None = None,
+) -> dict[str, Any]:
+    prompt = prompt.strip()
+    if not prompt:
+        raise ValueError("Prompt is required.")
+    size = normalize_generation_size(size)
+    quality = normalize_generation_quality(quality)
+    output_format = normalize_generation_output_format(output_format)
+    background = normalize_generation_background(background)
+    target = image_generation_output_path(
+        prompt,
+        output_path,
+        name=name,
+        output_format=output_format,
+    )
+    image_bytes = generate_image_bytes(
+        prompt,
+        model=model,
+        size=size,
+        quality=quality,
+        output_format=output_format,
+        background=background,
+    )
+    written = write_unique_bytes(target, image_bytes)
+    return _json_ready(
+        image_generation_metadata(
+            prompt=prompt,
+            output=written,
+            model=model,
+            size=size,
+            quality=quality,
+            output_format=output_format,
+            background=background,
+        )
+    )
 
 
 def crop_image(

@@ -11,6 +11,45 @@ mcp = FastMCP("ai-asset-prep")
 
 
 @mcp.tool()
+def generate_image(
+    prompt: str,
+    output_path: str | None = None,
+    name: str | None = None,
+    model: str = image_tasks.IMAGE_GENERATION_DEFAULT_MODEL,
+    size: str = image_tasks.IMAGE_GENERATION_DEFAULT_SIZE,
+    quality: str = image_tasks.IMAGE_GENERATION_DEFAULT_QUALITY,
+    output_format: str = image_tasks.IMAGE_GENERATION_DEFAULT_FORMAT,
+    background: str | None = None,
+) -> dict[str, Any]:
+    """Generate an image from a text prompt and save it under outputs or a chosen path.
+
+    Use this first when the user asks to create a new visual asset from text.
+    After generation, call crop_image for background removal/alpha trimming,
+    fit_image for exact dimensions, or make_sprite_sheet to combine generated
+    assets into a sheet. Prefer absolute output_path values. If output_path is
+    omitted, the image is written under /Users/seungjae/Codes/ai-asset-prep/outputs
+    with a unique filename.
+
+    Defaults are low-cost: model="gpt-image-1-mini", size="1024x1024",
+    quality="low", output_format="png". output_format must be png, jpeg, or
+    webp. background may be "opaque", "transparent", or null. Requires
+    OPENAI_API_KEY in the environment or /Users/seungjae/Codes/ai-asset-prep/.env.
+    Returns output path, model, size, quality, output_format, background, prompt,
+    and prompt_summary.
+    """
+    return image_tasks.generate_image(
+        prompt,
+        output_path,
+        name=name,
+        model=model,
+        size=size,
+        quality=quality,
+        output_format=output_format,
+        background=background,
+    )
+
+
+@mcp.tool()
 def crop_image(
     input_path: str,
     output_path: str | None = None,

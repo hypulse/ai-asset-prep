@@ -44,6 +44,7 @@ SPRITE_SHEET_BUILDER_CLIPBOARD_IMAGE_STATE_KEY = (
 SPRITE_SHEET_BUILDER_CLIPBOARD_SEEN_STATE_KEY = (
     "sprite_sheet_builder_clipboard_seen_ids"
 )
+GENERATED_IMAGE_STATE_KEY = "image_generation_result"
 MODEL_NONE = "none"
 MODEL_OPTIONS = {
     "u2net": "u2net - 기본",
@@ -201,6 +202,11 @@ def clipboard_image_name(original_name: str, index: int) -> str:
     return f"{stem}.png"
 
 
+def generated_image_name(prompt: str, name: str, output_format: str) -> str:
+    stem = image_tasks.slugify(name or prompt[:60]) or "generated_image"
+    return f"{stem}.{output_format}"
+
+
 def format_file_size(byte_count: int) -> str:
     if byte_count < 1024:
         return f"{byte_count} B"
@@ -355,6 +361,31 @@ def remove_clipboard_image(image_state_key: str, digest: str) -> None:
         for image in st.session_state.get(image_state_key, [])
         if image.get("digest") != digest
     ]
+
+
+def append_generated_image(
+    *,
+    image_state_key: str,
+    image_bytes: bytes,
+    name: str,
+) -> bool:
+    if image_state_key not in st.session_state:
+        st.session_state[image_state_key] = []
+
+    digest = hashlib.sha1(image_bytes).hexdigest()
+    images = st.session_state[image_state_key]
+    if any(image.get("digest") == digest for image in images):
+        return False
+
+    images.append(
+        {
+            "name": name,
+            "bytes": image_bytes,
+            "digest": digest,
+            "source": "generated",
+        }
+    )
+    return True
 
 
 def render_clipboard_image_manager(
@@ -1430,6 +1461,195 @@ def save_output(item: dict[str, Any], png_bytes: bytes, width: int, height: int)
     output_path = unique_output_path(OUTPUT_DIR / output_name)
     output_path.write_bytes(png_bytes)
     return output_path
+
+
+def render_image_generation_tab() -> None:
+    with st.container(border=True):
+        prompt = st.text_area(
+            "Prompt",
+            key="image_generation_prompt",
+            height=140,
+            placeholder="pixel art skeleton warrior, transparent background",
+        )
+        control_cols = st.columns([1, 1, 0.8, 0.8, 0.9, 1], vertical_alignment="bottom")
+        with control_cols[0]:
+            output_name = st.text_input(
+                "파일명",
+                key="image_generation_name",
+                placeholder="skeleton_warrior",
+                width=CONTROL_WIDTH_MD,
+            )
+        with control_cols[1]:
+            model = st.text_input(
+                "모델",
+                value=image_tasks.IMAGE_GENERATION_DEFAULT_MODEL,
+                key="image_generation_model",
+                width=CONTROL_WIDTH_MD,
+            )
+        with control_cols[2]:
+            size = st.text_input(
+                "크기",
+                value=image_tasks.IMAGE_GENERATION_DEFAULT_SIZE,
+                key="image_generation_size",
+                width=CONTROL_WIDTH_SM,
+            )
+        with control_cols[3]:
+            quality = st.selectbox(
+                "품질",
+                options=list(image_tasks.IMAGE_GENERATION_QUALITY_OPTIONS),
+                index=list(image_tasks.IMAGE_GENERATION_QUALITY_OPTIONS).index(
+                    image_tasks.IMAGE_GENERATION_DEFAULT_QUALITY
+                ),
+                key="image_generation_quality",
+                width=CONTROL_WIDTH_SM,
+            )
+        with control_cols[4]:
+            output_format = st.selectbox(
+                "포맷",
+                options=list(image_tasks.IMAGE_GENERATION_FORMAT_OPTIONS),
+                index=list(image_tasks.IMAGE_GENERATION_FORMAT_OPTIONS).index(
+                    image_tasks.IMAGE_GENERATION_DEFAULT_FORMAT
+                ),
+                key="image_generation_output_format",
+                width=CONTROL_WIDTH_SM,
+            )
+        with control_cols[5]:
+            background = st.selectbox(
+                "배경",
+                options=["", *image_tasks.IMAGE_GENERATION_BACKGROUND_OPTIONS],
+                format_func=lambda value: "기본" if value == "" else value,
+                key="image_generation_background",
+                width=CONTROL_WIDTH_SM,
+            )
+
+        if st.button("생성", type="primary", width=CONTROL_WIDTH_MD):
+            try:
+                normalized_size = image_tasks.normalize_generation_size(size)
+                normalized_quality = image_tasks.normalize_generation_quality(quality)
+                normalized_format = image_tasks.normalize_generation_output_format(
+                    output_format
+                )
+                normalized_background = image_tasks.normalize_generation_background(
+                    background
+                )
+                file_name = generated_image_name(
+                    prompt,
+                    output_name,
+                    normalized_format,
+                )
+                with st.spinner("이미지 생성 중..."):
+                    image_bytes = image_tasks.generate_image_bytes(
+                        prompt,
+                        model=model,
+                        size=normalized_size,
+                        quality=normalized_quality,
+                        output_format=normalized_format,
+                        background=normalized_background,
+                    )
+                st.session_state[GENERATED_IMAGE_STATE_KEY] = {
+                    "name": file_name,
+                    "bytes": image_bytes,
+                    "digest": hashlib.sha1(image_bytes).hexdigest(),
+                    "prompt": prompt.strip(),
+                    "model": model,
+                    "size": normalized_size,
+                    "quality": normalized_quality,
+                    "output_format": normalized_format,
+                    "background": normalized_background,
+                }
+                st.success("이미지를 생성했습니다.")
+            except Exception as exc:
+                st.error(str(exc))
+
+    result = st.session_state.get(GENERATED_IMAGE_STATE_KEY)
+    if not isinstance(result, dict):
+        st.info("프롬프트를 입력하고 이미지를 생성하세요.")
+        return
+
+    image_bytes = result["bytes"]
+    file_name = result["name"]
+    output_format = result["output_format"]
+    mime_type = "image/jpeg" if output_format == "jpeg" else f"image/{output_format}"
+    try:
+        preview = process_original_preview(image_bytes)
+    except Exception:
+        preview = {"preview_bytes": image_bytes, "size": (0, 0)}
+
+    with st.container(border=True):
+        st.write(f"**{file_name}**")
+        width, height = preview["size"]
+        st.caption(
+            f"id={result['digest'][:8]} · model={result['model']} · "
+            f"size={result['size']} · quality={result['quality']} · "
+            f"format={output_format} · background={result['background'] or 'default'} · "
+            f"image={width}x{height}px"
+        )
+        render_fixed_preview(preview["preview_bytes"], alt=file_name)
+
+        action_cols = st.columns([1, 1, 1, 1, 1.4], vertical_alignment="bottom")
+        with action_cols[0]:
+            st.download_button(
+                "다운로드",
+                data=image_bytes,
+                file_name=file_name,
+                mime=mime_type,
+                key="image_generation_download",
+                width="stretch",
+            )
+        with action_cols[1]:
+            if st.button("outputs에 저장", key="image_generation_save", width="stretch"):
+                OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+                output_path = unique_output_path(OUTPUT_DIR / file_name)
+                output_path.write_bytes(image_bytes)
+                st.success(f"저장됨: {output_path}")
+        with action_cols[2]:
+            if st.button(
+                "자동 탭으로 보내기",
+                key="image_generation_send_cut_fit",
+                width="stretch",
+            ):
+                added = append_generated_image(
+                    image_state_key=CLIPBOARD_IMAGE_STATE_KEY,
+                    image_bytes=image_bytes,
+                    name=file_name,
+                )
+                st.success(
+                    "자동 배경 제거/리사이즈 탭에 추가했습니다."
+                    if added
+                    else "이미 추가된 이미지입니다."
+                )
+        with action_cols[3]:
+            if st.button(
+                "수동 탭으로 보내기",
+                key="image_generation_send_manual",
+                width="stretch",
+            ):
+                added = append_generated_image(
+                    image_state_key=MANUAL_TRANSFORM_CLIPBOARD_IMAGE_STATE_KEY,
+                    image_bytes=image_bytes,
+                    name=file_name,
+                )
+                st.success(
+                    "수동 자르기/그리기 탭에 추가했습니다."
+                    if added
+                    else "이미 추가된 이미지입니다."
+                )
+        with action_cols[4]:
+            if st.button(
+                "스프라이트 시트 소스로 보내기",
+                key="image_generation_send_sheet",
+                width="stretch",
+            ):
+                added = append_generated_image(
+                    image_state_key=SPRITE_SHEET_BUILDER_CLIPBOARD_IMAGE_STATE_KEY,
+                    image_bytes=image_bytes,
+                    name=file_name,
+                )
+                st.success(
+                    "스프라이트 시트 생성 탭에 추가했습니다."
+                    if added
+                    else "이미 추가된 이미지입니다."
+                )
 
 
 def render_image_card(item: dict[str, Any]) -> None:
@@ -2587,14 +2807,23 @@ def render_tileset_guide_tab() -> None:
 
 st.set_page_config(page_title="AI Asset Prep", layout="wide")
 
-cut_fit_tab, manual_transform_tab, sprite_sheet_builder_tab, tileset_guide_tab = st.tabs(
+(
+    image_generation_tab,
+    cut_fit_tab,
+    manual_transform_tab,
+    sprite_sheet_builder_tab,
+    tileset_guide_tab,
+) = st.tabs(
     [
+        "이미지 생성",
         "자동 배경 제거/리사이즈",
         "수동 자르기/그리기",
         "스프라이트 시트 생성/복구",
         "타일셋 가이드/타일 추출",
     ]
 )
+with image_generation_tab:
+    render_image_generation_tab()
 with cut_fit_tab:
     render_cut_fit_tab()
 with manual_transform_tab:
