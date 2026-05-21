@@ -1,6 +1,6 @@
-# image-cut-fit
+# ai-asset-prep
 
-AI 생성 이미지나 에셋을 활용해 빠르게 게임이나 앱 데모를 만들고 싶어서 개발한 로컬 앱입니다.
+AI Asset Prep은 AI 생성 이미지나 에셋을 활용해 빠르게 게임이나 앱 데모를 만들고 싶어서 개발한 로컬 앱입니다.
 배경과 빈 여백을 정리해 PNG 스프라이트로 저장하고, 한 장에 모인 스프라이트도 개별 이미지로 분리할 수 있습니다.
 
 ## 실행
@@ -12,7 +12,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-macOS에서는 `Image Cut Fit.command`를 더블클릭해 실행할 수 있습니다.
+macOS에서는 `AI Asset Prep.command`를 더블클릭해 실행할 수 있습니다.
 
 `rembg`는 첫 실행 시 모델 파일을 다운로드할 수 있습니다.
 
@@ -54,10 +54,10 @@ Codex MCP 설정 예시:
 ```json
 {
   "mcpServers": {
-    "image-cut-fit": {
-      "command": "/Users/seungjae/Codes/image-cut-fit/.venv/bin/python",
-      "args": ["/Users/seungjae/Codes/image-cut-fit/mcp_server.py"],
-      "cwd": "/Users/seungjae/Codes/image-cut-fit"
+    "ai-asset-prep": {
+      "command": "/Users/seungjae/Codes/ai-asset-prep/.venv/bin/python",
+      "args": ["/Users/seungjae/Codes/ai-asset-prep/mcp_server.py"],
+      "cwd": "/Users/seungjae/Codes/ai-asset-prep"
     }
   }
 }

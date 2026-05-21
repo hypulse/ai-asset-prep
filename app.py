@@ -2585,7 +2585,7 @@ def render_tileset_guide_tab() -> None:
                 )
 
 
-st.set_page_config(page_title="Image Cut Fit", layout="wide")
+st.set_page_config(page_title="AI Asset Prep", layout="wide")
 
 cut_fit_tab, manual_transform_tab, sprite_sheet_builder_tab, tileset_guide_tab = st.tabs(
     [

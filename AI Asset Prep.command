@@ -21,7 +21,7 @@ fi
 
 PORT="$(
   "$VENV_PYTHON" -c 'import os, socket
-preferred = int(os.environ.get("IMAGE_CUT_FIT_PORT", "8501"))
+preferred = int(os.environ.get("AI_ASSET_PREP_PORT", "8501"))
 candidates = [preferred] + [port for port in range(8501, 8521) if port != preferred]
 for port in candidates:
     with socket.socket() as sock:
@@ -34,11 +34,11 @@ else:
 )"
 URL="http://localhost:$PORT"
 
-echo "Starting Image Cut Fit..."
+echo "Starting AI Asset Prep..."
 echo "URL: $URL"
 echo "Close this Terminal window or press Ctrl+C to stop the app."
 
-if [[ "${IMAGE_CUT_FIT_NO_OPEN:-0}" != "1" ]]; then
+if [[ "${AI_ASSET_PREP_NO_OPEN:-0}" != "1" ]]; then
   open "$URL" >/dev/null 2>&1 &
 fi
 

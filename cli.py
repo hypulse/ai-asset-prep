@@ -122,8 +122,8 @@ def handle_tiles_slice(args: argparse.Namespace) -> dict[str, Any]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="image-cut-fit",
-        description="Image Cut Fit image processing CLI.",
+        prog="ai-asset-prep",
+        description="AI Asset Prep image processing CLI.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 

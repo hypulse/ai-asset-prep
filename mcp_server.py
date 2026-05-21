@@ -7,7 +7,7 @@ from mcp.server.fastmcp import FastMCP
 import image_tasks
 
 
-mcp = FastMCP("image-cut-fit")
+mcp = FastMCP("ai-asset-prep")
 
 
 @mcp.tool()
@@ -24,7 +24,7 @@ def crop_image(
     Use this when the user asks to remove an image background, trim transparent
     whitespace, crop to the alpha bounds, or prepare a transparent PNG asset.
     Prefer absolute file paths. If output_path is omitted, the PNG is written
-    under /Users/seungjae/Codes/image-cut-fit/outputs with a unique filename.
+    under /Users/seungjae/Codes/ai-asset-prep/outputs with a unique filename.
 
     Set model_name to "u2net" for the default rembg background removal,
     "isnet-general-use" for general image preservation, "isnet-anime" for
@@ -65,7 +65,7 @@ def fit_image(
     24x24, or 36x36. This tool does not remove backgrounds; call crop_image
     first if background removal or alpha trimming is needed. Prefer absolute
     input_path and output_path values. If output_path is omitted, the PNG is
-    written under /Users/seungjae/Codes/image-cut-fit/outputs with a unique
+    written under /Users/seungjae/Codes/ai-asset-prep/outputs with a unique
     filename.
 
     resize_mode must be one of: "contain_center", "contain_top",
@@ -110,7 +110,7 @@ def make_sprite_sheet(
     Use this when the user asks to make a sprite sheet, combine several PNGs
     into one sheet, preserve pixel art, or pack mixed-size game assets. Provide
     input_paths in the desired order. Prefer absolute paths. If output_path is
-    omitted, the PNG is written under /Users/seungjae/Codes/image-cut-fit/outputs
+    omitted, the PNG is written under /Users/seungjae/Codes/ai-asset-prep/outputs
     with a unique filename. If metadata_path is provided, placement metadata is
     also written as JSON.
 
@@ -150,7 +150,7 @@ def recover_sprite_sheet(
     Use this when the user asks to recover sprites from a sheet, split a cursor
     or character sheet, or inspect individual silhouettes from one transparent
     PNG. Prefer absolute input_path and output_dir values. If output_dir is
-    omitted, files are written under /Users/seungjae/Codes/image-cut-fit/outputs
+    omitted, files are written under /Users/seungjae/Codes/ai-asset-prep/outputs
     in a unique sprite directory. If metadata_path is provided, split metadata is
     also written as JSON.
 
@@ -187,7 +187,7 @@ def make_tileset_guide(
     Use this when the user asks for a tileset guide, a 3x3 tile template, or a
     guide image that can later be sliced into top/center/bottom/corner tiles.
     If output_path is omitted, the PNG is written under
-    /Users/seungjae/Codes/image-cut-fit/outputs with a unique filename. If
+    /Users/seungjae/Codes/ai-asset-prep/outputs with a unique filename. If
     metadata_path is provided, tile box metadata is also written as JSON.
 
     tile_size is the square tile size in pixels. prefix is used only for naming
@@ -223,7 +223,7 @@ def slice_tileset(
     guide image and wants separate tile PNGs. The tile_size, gap, and margin
     values must match the guide settings used to create the image. Prefer
     absolute input_path and output_dir values. If output_dir is omitted, files
-    are written under /Users/seungjae/Codes/image-cut-fit/outputs in a tile
+    are written under /Users/seungjae/Codes/ai-asset-prep/outputs in a tile
     directory. If metadata_path is provided, slice metadata is also written as
     JSON.
 
